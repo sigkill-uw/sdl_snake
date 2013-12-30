@@ -1,4 +1,19 @@
-all: sdl_snake
+CC = gcc
+SOURCES = $(shell echo *.c)
+OBJECTS = $(SOURCES:.c=.o)
+OUTPUT = sdl_snake
+CFLAGS = `sdl2-config --cflags --libs` -Wall -O4 -gstabs
 
-sdl_snake: main.c
-	gcc -o sdl_snake `sdl2-config --cflags --libs` main.c
+.PHONY: all
+.PHONY: clean
+
+all: $(OUTPUT)
+
+clean:
+	-rm $(OUTPUT) $(OBJECTS)
+
+$(OUTPUT): $(OBJECTS)
+	$(CC) $(CFLAGS) -o $(OUTPUT) $(OBJECTS)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $<

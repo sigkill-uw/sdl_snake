@@ -1,231 +1,108 @@
-#include <stdio.h>
+#include <stdio.h>	/* puts, fputs */
 #include <stdlib.h>
 #include <time.h>
 
 #include "SDL.h"
 
-#define WINDOW_WIDTH	600
-#define WINDOW_HEIGHT	400
+#include "game.h"
+#include "common.h"
 
-#define TILE_SIZE		8
+direction_t scancode_to_direction(SDL_Scancode key);
 
-#define N_TILES_X		(WINDOW_WIDTH / TILE_SIZE)
-#define N_TILES_Y		(WINDOW_HEIGHT / TILE_SIZE)
+void cleanup(void);
 
-#define TICS_PER_GRAIN	(CLOCKS_PER_SEC / 60)
-
-void die(char *string);
-
-void place_goal(void);
-
-void redraw_window(void);
-void handle_keypress(SDL_Scancode key);
-
-SDL_Window *window;
-SDL_Surface *surface;
-Uint32 white, black;
-
-enum
+int main(void)
 {
-	TILE_EMPTY,
-	TILE_GOAL,
-	TILE_LEFT,
-	TILE_RIGHT,
-	TILE_UP,
-	TILE_DOWN,
-	TILE_START
-} map[N_TILES_X][N_TILES_Y] = {{TILE_EMPTY}};
-
-int x = N_TILES_X / 2, y = N_TILES_Y / 2;
-int tx = N_TILES_X / 2, ty = N_TILES_Y / 2;
-int gx, gy;
-
-int pause = 1;
-
-int main(int argc, char **argv)
-{
-	puts("sdl_snake by sigkill");
+	puts("sdl_snake v2.0, by sigkill\n"
+		"Steer with arrow keys or WASD.\n"
+		"Space toggles pause. Pressing in any direction unpauses.\n"
+		"Chase the red dots while avoiding walls and your tail.");
 	
-	SDL_Init(SDL_INIT_VIDEO);
+	SDL_Window *window;
+	
+	if(SDL_Init(SDL_INIT_VIDEO) == -1)
+		die("Couldn't initialize SDL");
+	atexit(cleanup);
 	
 	window = SDL_CreateWindow(
 		"SDL Snake",
 		SDL_WINDOWPOS_UNDEFINED,
 		SDL_WINDOWPOS_UNDEFINED,
-		WINDOW_WIDTH, WINDOW_HEIGHT,
+		FIELD_WIDTH, FIELD_HEIGHT,
 		SDL_WINDOW_OPENGL);
 	
 	if(!window)
-		die("Could not create SDL window");
-	
-	surface = SDL_GetWindowSurface(window);
-	white = SDL_MapRGB(surface -> format, 255, 255, 255);
-	black = SDL_MapRGB(surface -> format, 0, 0, 0);
-	
-	map[N_TILES_X][N_TILES_Y] = TILE_START;
-	
+		die("Couldn't create window\n");
+
 	srand(time(NULL));
 	
-	place_goal();
+	gamestate_t game;
+	game_init(&game, window);
 	
-	clock_t timer = clock() + TICS_PER_GRAIN;
+	SDL_Thread *thread = SDL_CreateThread(game_loop, "game", (void *)&game);
+	if(!thread)
+		die("Couldn't create thread\n");
+	
+	/* Loop forever */
 	for(;;)
 	{
-		SDL_Event e;
-		while(SDL_PollEvent(&e))
+		/* Block for an event */
+		SDL_Event event;
+		if(!SDL_WaitEvent(&event))
+			die("Error processing window events\n");
+		
+		/* Handle event */
+		switch(event.type)
 		{
-			int kflag = 0;
-			
-			switch(e.type)
-			{
-				case SDL_KEYDOWN:
-					if(!kflag)
-					{
-						handle_keypress(e.key.keysym.scancode);
-						kflag = 1;
-					}
-					break;
-				case SDL_WINDOWEVENT:
-					if(e.window.event == SDL_WINDOWEVENT_EXPOSED || e.window.event == SDL_WINDOWEVENT_SHOWN)
-						redraw_window();
-					break;
-				case SDL_QUIT:
-					goto quit;
-					break;
-			}
-		}
-			
-		if(clock() >= timer)
-		{
-			timer += TICS_PER_GRAIN;
-			
-			if(!pause)
-			{
-				int nx = x, ny = y;
-				
-				switch(map[x][y])
-				{
-					case TILE_LEFT: nx --;
-						break;
-					case TILE_RIGHT: nx ++;
-						break;
-					case TILE_UP: ny --;
-						break;
-					case TILE_DOWN: ny ++;
-						break;
-				}
-					
-				if(nx < 0 || ny < 0 || nx > N_TILES_X - 1 || ny > N_TILES_Y - 1 ||
-				 (map[nx][ny] != TILE_GOAL && map[nx][ny] != TILE_EMPTY))
-					goto game_over;
-				
-				int goal = map[nx][ny] == TILE_GOAL;
-				map[nx][ny] = map[x][y];
-				x = nx;
-				y = ny;
-				
-				if(goal)
-				{
-					place_goal();
-				}
+			case SDL_QUIT:
+				SDL_DestroyWindow(window);
+				return 0;	/* Cleanup will occur in atexit function */
+			case SDL_KEYDOWN:
+				game_lock(&game);
+				if(event.key.keysym.scancode == SDL_SCANCODE_SPACE)
+					game_toggle_pause(&game);
 				else
+					game_handle_direction_change(&game, scancode_to_direction(event.key.keysym.scancode));
+				game_unlock(&game);
+				break;
+			case SDL_WINDOWEVENT:
+				if(event.window.event == SDL_WINDOWEVENT_EXPOSED || event.window.event == SDL_WINDOWEVENT_SHOWN)
 				{
-					nx = tx;
-					ny = ty;
-									
-					switch(map[nx][ny])
-					{
-						case TILE_LEFT: nx --;
-							break;
-						case TILE_RIGHT: nx ++;
-							break;
-						case TILE_UP: ny --;
-							break;
-						case TILE_DOWN: ny ++;
-							break;
-					}
-					
-					map[tx][ty] = TILE_EMPTY;
-					tx = nx;
-					ty = ny;
+					game_lock(&game);
+					game.redraw = true;
+					game_unlock(&game);
 				}
-				
-				redraw_window();
-			}
+				break;
 		}
 	}
 	
-	game_over:
-	
-	puts("Game over!");
-	
-	quit:
-	
-	SDL_DestroyWindow(window);
-	
+	/* Unreachable */
+	/* return 0; */
+}
+
+void cleanup(void)
+{
+	puts("Quitting...");
 	SDL_Quit();
-	
-	return 0;
 }
 
-void die(char *string)
+direction_t scancode_to_direction(SDL_Scancode key)
 {
-	fputs(string, stderr);
-	exit(1);
-}
-
-void redraw_window(void)
-{
-	int i, j;
-	
-	SDL_Rect r = {0, 0, TILE_SIZE, TILE_SIZE};
-	
-	for(i = 0; i < N_TILES_X; r.x += TILE_SIZE, i ++)
-		for(r.y = j = 0; j < N_TILES_Y; r.y += TILE_SIZE, j ++)
-			SDL_FillRect(surface, &r, map[i][j] ? white : black);
-	
-	SDL_UpdateWindowSurface(window);
-}
-
-void handle_keypress(SDL_Scancode key)
-{	
 	switch(key)
 	{
+		case SDL_SCANCODE_A:
 		case SDL_SCANCODE_LEFT:
-			pause = 0;
-			if(map[x][y] != TILE_RIGHT)
-				map[x][y] = TILE_LEFT;
-			break;
-		case SDL_SCANCODE_RIGHT:
-			pause = 0;
-			if(map[x][y] != TILE_LEFT)
-				map[x][y] = TILE_RIGHT;
-			break;
-		case SDL_SCANCODE_UP:
-			pause = 0;
-			if(map[x][y] != TILE_DOWN)
-				map[x][y] = TILE_UP;
-			break;
+			return DIRECTION_WEST;
+		case SDL_SCANCODE_S:
 		case SDL_SCANCODE_DOWN:
-			pause = 0;
-			if(map[x][y] != TILE_UP)
-				map[x][y] = TILE_DOWN;
-			break;
+			return DIRECTION_SOUTH;
+		case SDL_SCANCODE_D:
+		case SDL_SCANCODE_RIGHT:
+			return DIRECTION_EAST;
+		case SDL_SCANCODE_W:
+		case SDL_SCANCODE_UP:
+			return DIRECTION_NORTH;
+		default:
+			return DIRECTION_NONE;
 	}
-	
-	if(key == SDL_SCANCODE_SPACE && map[x][y] != TILE_START)
-		pause = !pause;
-}
-
-void place_goal(void)
-{
-	int gx, gy;
-	
-	do
-	{
-		gx = rand() % N_TILES_X;
-		gy = rand() % N_TILES_Y;
-	} while(map[gx][gy]);
-	
-	map[gx][gy] = TILE_GOAL;
 }
