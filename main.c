@@ -1,5 +1,4 @@
-#include <stdio.h>	/* puts, fputs */
-#include <stdlib.h>
+#include <stdio.h>
 #include <time.h>
 
 #include "SDL.h"
@@ -7,13 +6,13 @@
 #include "game.h"
 #include "common.h"
 
-direction_t scancode_to_direction(SDL_Scancode key);
+tile_t scancode_to_direction(SDL_Scancode key);
 
 void cleanup(void);
 
 int main(void)
 {
-	puts("sdl_snake v2.0, by sigkill\n"
+	puts("sdl_snake v3.0, by sigkill\n"
 		"Steer with arrow keys or WASD.\n"
 		"Space toggles pause. Pressing in any direction unpauses.\n"
 		"Chase the red dots while avoiding walls and your tail.");
@@ -22,7 +21,6 @@ int main(void)
 	
 	if(SDL_Init(SDL_INIT_VIDEO) == -1)
 		die("Couldn't initialize SDL");
-	atexit(cleanup);
 	
 	window = SDL_CreateWindow(
 		"SDL Snake",
@@ -32,77 +30,87 @@ int main(void)
 		SDL_WINDOW_OPENGL);
 	
 	if(!window)
-		die("Couldn't create window\n");
-
+		die("Couldn't create window");
+	
 	srand(time(NULL));
 	
 	gamestate_t game;
-	game_init(&game, window);
+	gamestate_init(&game, window);
 	
-	SDL_Thread *thread = SDL_CreateThread(game_loop, "game", (void *)&game);
-	if(!thread)
-		die("Couldn't create thread\n");
-	
-	/* Loop forever */
+	unsigned int timer = SDL_GetTicks() + MS_PER_FRAME;
 	for(;;)
 	{
-		/* Block for an event */
 		SDL_Event event;
-		if(!SDL_WaitEvent(&event))
-			die("Error processing window events\n");
+		tile_t new_direction = TILE_NONE;
+		bool redraw = false;
 		
-		/* Handle event */
-		switch(event.type)
+		while(SDL_PollEvent(&event))
 		{
-			case SDL_QUIT:
-				SDL_DestroyWindow(window);
-				return 0;	/* Cleanup will occur in atexit function */
-			case SDL_KEYDOWN:
-				game_lock(&game);
-				if(event.key.keysym.scancode == SDL_SCANCODE_SPACE)
-					game_toggle_pause(&game);
-				else
-					game_handle_direction_change(&game, scancode_to_direction(event.key.keysym.scancode));
-				game_unlock(&game);
-				break;
-			case SDL_WINDOWEVENT:
-				if(event.window.event == SDL_WINDOWEVENT_EXPOSED || event.window.event == SDL_WINDOWEVENT_SHOWN)
-				{
-					game_lock(&game);
-					game.redraw = true;
-					game_unlock(&game);
-				}
-				break;
+			switch(event.type)
+			{
+				case SDL_QUIT:
+					goto end;
+				case SDL_KEYDOWN:
+					if(event.key.keysym.scancode == SDL_SCANCODE_SPACE)
+						gamestate_toggle_pause(&game);
+					else
+						new_direction = scancode_to_direction(event.key.keysym.scancode);
+					break;
+				case SDL_WINDOWEVENT:
+					if(event.window.event == SDL_WINDOWEVENT_EXPOSED || event.window.event == SDL_WINDOWEVENT_SHOWN)
+						redraw = true;
+					break;
+			}
 		}
+		
+		while(SDL_GetTicks() < timer);
+		timer += MS_PER_FRAME;
+		
+		gamestate_steer(&game, new_direction);
+		gamestate_tick(&game);
+		if(game.game_over || game.victory)
+			break;
+		gamestate_render(&game, redraw);
 	}
 	
-	/* Unreachable */
-	/* return 0; */
-}
-
-void cleanup(void)
-{
-	puts("Quitting...");
+	end:
+	
+	if(game.game_over)
+	{
+		puts("Game over - you lose!");
+	}
+	else if(game.victory)
+	{
+		puts("You win!");
+	}
+	else
+	{
+		puts("Exiting.");
+	}
+	
+	SDL_DestroyWindow(window);
 	SDL_Quit();
+	
+	return 0;
 }
 
-direction_t scancode_to_direction(SDL_Scancode key)
+tile_t scancode_to_direction(SDL_Scancode key)
 {
 	switch(key)
 	{
 		case SDL_SCANCODE_A:
 		case SDL_SCANCODE_LEFT:
-			return DIRECTION_WEST;
+			return TILE_WEST;
 		case SDL_SCANCODE_S:
 		case SDL_SCANCODE_DOWN:
-			return DIRECTION_SOUTH;
+			return TILE_SOUTH;
 		case SDL_SCANCODE_D:
 		case SDL_SCANCODE_RIGHT:
-			return DIRECTION_EAST;
+			return TILE_EAST;
 		case SDL_SCANCODE_W:
 		case SDL_SCANCODE_UP:
-			return DIRECTION_NORTH;
+			return TILE_NORTH;
 		default:
-			return DIRECTION_NONE;
+			return TILE_NONE;
 	}
 }

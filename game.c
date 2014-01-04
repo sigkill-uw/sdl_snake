@@ -1,219 +1,258 @@
 #define _GAME_C_
 
-#include <stdlib.h>	/* malloc, rand, srand */
-#include <time.h>	/* time, clock */
+#include <stdlib.h>
+#include <limits.h>
 
 #include "SDL.h"
-#include "SDL_thread.h"
-
 #include "common.h"
-
 #include "game.h"
 
-/* Game loop */
-int game_loop(void *game)
-{
-	/* I dunno if there's a better way of doing this. It's such a simple game that the line between rendering and logic is pretty fine. */
-	for(;;)
-		game_update((gamestate_t *)game);
-}
+#define N_TILES_X		(FIELD_WIDTH / TILE_SIZE)
+#define N_TILES_Y		(FIELD_HEIGHT / TILE_SIZE)
 
-void game_place_goal(gamestate_t *game)
-{
-	game -> goal.x = random_integer(GOAL_RADIUS, FIELD_WIDTH - GOAL_RADIUS - 1);
-	game -> goal.y = random_integer(GOAL_RADIUS, FIELD_HEIGHT - GOAL_RADIUS - 1);
-}
+#define SNAKE_SPEED		1
 
-void game_init(gamestate_t *game, SDL_Window *window)
+#define SNAKE_GOAL_FEED	6
+
+#define SNAKE_INITIAL_X	(N_TILES_X / 2)
+#define SNAKE_INITIAL_Y	(N_TILES_Y / 2)
+
+#define MAX_PLACEMENT_TRIALS	4096
+
+#define FIELD_COLOR		0xA0A0A0
+#define SNAKE_COLOR		0x2020A0
+#define GOAL_COLOR		0xA02020
+
+#define TILE_IS_DIRECTION(t)		((t) && abs(t) <= TILE_EAST)
+#define TILES_ARE_ORTHOGONAL(m, n)	(((m) ^ (n)) & 0x01)
+#define TILES_ARE_PARALLEL(m, n)	(!TILES_ARE_ORTHOGONAL((m), (n)))
+
+#define FROM_HEX(h)		(((h) >> 16) & 0xff), (((h) >> 8) & 0xff), ((h) & 0xff), 0xff
+
+void gamestate_init(gamestate_t *game, SDL_Window *window)
 {
-	game -> lock = SDL_CreateSemaphore(1);
-	if(!game -> lock)
-		die("Couldn't create lock semaphore\n");
+	game -> victory		= false;
+	game -> game_over	= false;
+	game -> paused		= false;
+	game -> redraw_goal	= false;
 	
-	/* Game isn't paused */
-	game -> paused = false;
+	int i = FIELD_WIDTH;
+	while(i --)
+	{
+		int j;
+		for(j = 0; j < FIELD_HEIGHT; j ++)
+			game -> map[i][j] = TILE_NONE;
+	}
 	
-	/* Set up the SDL stuff */
+	game -> snake.head.x = game -> snake.tail.x = SNAKE_INITIAL_X;
+	game -> snake.head.y = game -> snake.tail.y = SNAKE_INITIAL_Y;
+	game -> snake.feed = 0;
+	game -> map[SNAKE_INITIAL_X][SNAKE_INITIAL_Y] = TILE_START;
+	
+	do
+	{
+		game -> goal.x = rand() % N_TILES_X;
+		game -> goal.y = rand() % N_TILES_Y;
+	} while(game -> goal.x == SNAKE_INITIAL_X && game -> goal.y == SNAKE_INITIAL_Y);
+	game -> map[game -> goal.x][game -> goal.y] = TILE_GOAL;
+	
+	game -> erase.x = game -> erase.y = UINT_MAX;
+	
 	game -> window = window;
-	game -> surface = SDL_GetWindowSurface(window);
-	if(!game -> surface)
-		die("Couldn't grab window surface");
+	game -> renderer = SDL_CreateRenderer(window, -1, 0);
 	
-	/* Ostensibly these don't cause errors */
-	game -> field_color = SDL_MapRGB(game -> surface -> format, from_hex(FIELD_COLOR));
-	game -> snake_color = SDL_MapRGB(game -> surface -> format, from_hex(SNAKE_COLOR));
-	game -> goal_color = SDL_MapRGB(game -> surface -> format, from_hex(GOAL_COLOR));
-	
-	game -> snake.head = (segment_t *)malloc(sizeof(segment_t));
-	if(!game -> snake.head)
-		die("Couldn't allocate segment");
-	game -> snake.tail = game -> snake.head;
-	
-	game -> snake.head -> x = (double)FIELD_WIDTH / 2;
-	game -> snake.head -> y = (double)FIELD_HEIGHT / 2;
-	game -> snake.head -> direction = DIRECTION_NONE;
-	game -> snake.head -> length = (double)0;
-	game -> snake.head -> next = NULL;
-	
-	/* Place the goal */
-	game_place_goal(game);
-	
-	/* Indicate the the snake doesn't need extending */
-	game -> snake.goal_feed = (double)0;
+	if(!game -> renderer)
+		die("Couldn't initialize SDL renderer");
 }
 
-void game_redraw(gamestate_t *game)
+void gamestate_steer(gamestate_t *game, tile_t direction)
 {
-	/* Rather than errorchecking each call individually, we'll just do a single check at the end of the function */
-	SDL_ClearError();
-	
-	/* Clear the screen */
-	SDL_FillRect(game -> surface, NULL, game -> field_color);
-	
-	SDL_Rect r;
-	
-	/* Fill the snake head */
-	r.x = (int)game -> snake.head -> x - SNAKE_HALFWIDTH;
-	r.y = (int)game -> snake.head -> y - SNAKE_HALFWIDTH;
-	r.w = r.h = SNAKE_WIDTH;
-	SDL_FillRect(game -> surface, &r, game -> snake_color);
-	
-	/* Now that the head has been isolated and filled, we don't have to fill the entirety of every other segment */
-	
-	/* Iterate through the list of segments, filling the un-filled portions */
-	segment_t *segment;
-	for(segment = game -> snake.head; segment; segment = segment -> next)
+	if(direction)
 	{
-		/* This code is a little impenetrable, but I'm pretty sure it works */
-		switch(segment -> direction)
+		if(	game -> map[game -> snake.head.x][game -> snake.head.y] == TILE_START ||
+			TILES_ARE_ORTHOGONAL(game -> map[game -> snake.head.x][game -> snake.head.y], direction))
 		{
-			case DIRECTION_WEST:
-				r.x = (int)segment -> x - (int)segment -> length - SNAKE_HALFWIDTH;
-				r.y = (int)segment -> y - SNAKE_HALFWIDTH;
-				r.w = (unsigned int)segment -> length;
-				r.h = SNAKE_WIDTH;
-				break;
-			case DIRECTION_SOUTH:
-				r.x = (int)segment -> x - SNAKE_HALFWIDTH;
-				r.y = (int)segment -> y + SNAKE_HALFWIDTH;
-				r.w = SNAKE_WIDTH;
-				r.h = (unsigned int)segment -> length;
-				break;
-			case DIRECTION_EAST:
-				r.x = (int)segment -> x + SNAKE_HALFWIDTH;
-				r.y = (int)segment -> y - SNAKE_HALFWIDTH;
-				r.w = (unsigned int)segment -> length;
-				r.h = SNAKE_WIDTH;
-				break;
-			case DIRECTION_NORTH:
-				r.x = (int)segment -> x - SNAKE_HALFWIDTH;
-				r.y = (int)segment -> y - (int)segment -> length - SNAKE_HALFWIDTH;
-				r.w = SNAKE_WIDTH;
-				r.h = (unsigned int)segment -> length;
-				break;
+			game -> map[game -> snake.head.x][game -> snake.head.y] = direction;
 		}
 		
-		/* Draw the current segment */
-		SDL_FillRect(game -> surface, &r, game -> snake_color);
+		game -> paused = false; 
 	}
-	
-	/* Update the window */
-	SDL_UpdateWindowSurface(game -> window);
-	
-	/* Check for errors */
-	const char *err = SDL_GetError();
-	if(err && err[0])
-		die(err);
 }
 
-void game_update(gamestate_t *game)
+void gamestate_toggle_pause(gamestate_t *game)
 {
-	game_lock(game);
-	
-	if(game -> redraw)
-	{
-		game -> redraw = false;
-		game_redraw(game);
-	}
-	
-	if(!game -> paused && game -> snake.head -> direction != DIRECTION_NONE)
-	{
-		clock_t time = clock();
-		double delta = (double)(time - game -> timer) / CLOCKS_PER_SEC * SNAKE_MOVE_SPEED;
-		game -> timer = time;
-		
-		switch(-game -> snake.head -> direction)
-		{
-			case DIRECTION_WEST:
-				game -> snake.head -> x -= delta;
-				break;
-			case DIRECTION_SOUTH:
-				game -> snake.head -> y += delta;
-				break;
-			case DIRECTION_EAST:
-				game -> snake.head -> x += delta;
-				break;
-			case DIRECTION_NORTH:
-				game -> snake.head -> y -= delta;
-				break;
-		}
-		
-		game -> snake.head -> length += delta;
-		game -> snake.tail -> length -= delta;
-		
-		game_redraw(game);
-	}
-	
-	game_unlock(game);
+	if(game -> map[game -> snake.head.x][game -> snake.head.y] != TILE_START)
+		game -> paused = !game -> paused;
 }
 
-void game_handle_direction_change(gamestate_t *game, direction_t direction)
+void gamestate_tick(gamestate_t *game)
 {
-	if(direction == DIRECTION_NONE)
+	if(game -> map[game -> snake.head.x][game -> snake.head.y] == TILE_START || game -> paused)
 		return;
 	
-	if(game -> snake.head -> direction == DIRECTION_NONE)
+	tile_t last = game -> map[game -> snake.head.x][game -> snake.head.y];
+	
+	switch(last)
 	{
-		game -> snake.head -> direction = -direction;
-		game -> timer = clock();
+		case TILE_WEST:
+			game -> snake.head.x --;
+			break;
+		case TILE_SOUTH:
+			game -> snake.head.y ++;
+			break;
+		case TILE_NORTH:
+			game -> snake.head.y --;
+			break;
+		case TILE_EAST:
+			game -> snake.head.x ++;
+			break;
+	}
+	
+	if(game -> snake.head.x >= N_TILES_X || game -> snake.head.y >= N_TILES_Y)
+	{
+		game -> game_over = true;
 	}
 	else
 	{
-		/* We can't allow the player to turn too sharply */
-		//if(game -> snake.head -> length < SNAKE_WIDTH)
-		//	return;
-		
-		if(game -> snake.head -> direction != direction)
+		if(game -> map[game -> snake.head.x][game -> snake.head.y] == TILE_GOAL)
 		{
-			segment_t *new_segment = (segment_t *)malloc(sizeof(segment_t));
-			if(!new_segment)
-				die("Fatal: unable to allocate new segment\n");
+			game -> snake.feed += SNAKE_GOAL_FEED - 1;
 			
-			new_segment -> x = game -> snake.head -> x;
-			new_segment -> y = game -> snake.head -> y;
+			game -> map[game -> snake.head.x][game -> snake.head.y] = last;
 			
-			new_segment -> direction = -direction;
-			new_segment -> length = 0;
+			game -> redraw_goal = true;
 			
-			new_segment -> next = game -> snake.head;
-			game -> snake.head = new_segment;
+			int i = 0;
+			do
+			{
+				game -> goal.x = rand() % N_TILES_X;
+				game -> goal.y = rand() % N_TILES_Y;
+			} while(game -> map[game -> goal.x][game -> goal.y] && ++ i < MAX_PLACEMENT_TRIALS);
+			
+			if(i == MAX_PLACEMENT_TRIALS)
+			{
+				for(game -> goal.x = 0; game -> goal.x < N_TILES_X; game -> goal.x ++)
+				{
+					for(game -> goal.y = 0; game -> goal.y < N_TILES_Y && game -> map[game -> goal.x][game -> goal.y]; game -> goal.y ++);
+					
+					if(!game -> map[game -> goal.x][game -> goal.y])
+						break;
+				}
+				
+				if(game -> goal.x == N_TILES_X)
+					game -> victory = true;
+			}
+			
+			game -> map[game -> goal.x][game -> goal.y] = TILE_GOAL;
+		}
+		else if(game -> map[game -> snake.head.x][game -> snake.head.y])
+		{
+			game -> game_over = true;
+		}
+		else
+		{
+			game -> map[game -> snake.head.x][game -> snake.head.y] = last;
+			
+			if(game -> snake.feed)
+			{
+				game -> snake.feed --;
+			}
+			else
+			{
+				last = game -> map[game -> snake.tail.x][game -> snake.tail.y];
+				
+				game -> map[game -> snake.tail.x][game -> snake.tail.y] = TILE_NONE;
+				game -> erase = game -> snake.tail;
+				
+				switch(last)
+				{
+					case TILE_WEST:
+						game -> snake.tail.x --;
+						break;
+					case TILE_SOUTH:
+						game -> snake.tail.y ++;
+						break;
+					case TILE_NORTH:
+						game -> snake.tail.y --;
+						break;
+					case TILE_EAST:
+						game -> snake.tail.x ++;
+						break;
+				}
+			}
 		}
 	}
 }
 
-inline void game_lock(gamestate_t *game)
+void gamestate_render(gamestate_t *game, bool redraw)
 {
-	if(SDL_SemWait(game -> lock))
-		die("Couldn't lock semaphore");
-}
+	SDL_Rect rectangle;
+	rectangle.w = rectangle.h = TILE_SIZE - 2;
+	
+	if(redraw)
+	{
+		SDL_ClearError();
+		
+		SDL_SetRenderDrawColor(game -> renderer, FROM_HEX(FIELD_COLOR));
+		SDL_RenderFillRect(game -> renderer, NULL);
+		
+		SDL_SetRenderDrawColor(game -> renderer, FROM_HEX(GOAL_COLOR));
+		rectangle.x = 1 + game -> goal.x * TILE_SIZE;
+		rectangle.y = 1 + game -> goal.y * TILE_SIZE;
+		SDL_RenderFillRect(game -> renderer, &rectangle);
+		
+		SDL_SetRenderDrawColor(game -> renderer, FROM_HEX(SNAKE_COLOR));
+		
+		int i, j;
+		for(i = 0; i < N_TILES_X; i ++)
+			for(j = 0; j < N_TILES_Y; j ++)
+				if(game -> map[i][j] && game -> map[i][j] != TILE_GOAL)
+				{
+					rectangle.x = 1 + i * TILE_SIZE;
+					rectangle.y = 1 + j * TILE_SIZE;
+					SDL_RenderFillRect(game -> renderer, &rectangle);
+				}
+		
+		SDL_RenderPresent(game -> renderer);
+		
+		const char *error;
+		if((error = SDL_GetError()) && *error)
+			die("Error rendering");
+	}
+	else if(!game -> paused && game -> map[game -> snake.head.x][game -> snake.head.y] != TILE_START)
+	{
+		SDL_ClearError();
+		
+		rectangle.x = 1 + game -> snake.head.x * TILE_SIZE;
+		rectangle.y = 1 + game -> snake.head.y * TILE_SIZE;
+		SDL_SetRenderDrawColor(game -> renderer, FROM_HEX(SNAKE_COLOR));
+		SDL_RenderFillRect(game -> renderer, &rectangle);
+		
+		if(game -> redraw_goal)
+		{
+			rectangle.x = 1 + game -> goal.x * TILE_SIZE;
+			rectangle.y = 1 + game -> goal.y * TILE_SIZE;
+			
+			SDL_SetRenderDrawColor(game -> renderer, FROM_HEX(GOAL_COLOR));
+			SDL_RenderFillRect(game -> renderer, &rectangle);
+			
+			game -> redraw_goal = false;
+		}
+		
+		if(game -> erase.x != UINT_MAX)
+		{
+			rectangle.x = 1 + game -> erase.x * TILE_SIZE;
+			rectangle.y = 1 + game -> erase.y * TILE_SIZE;
+			SDL_SetRenderDrawColor(game -> renderer, FROM_HEX(FIELD_COLOR));
+			SDL_RenderFillRect(game -> renderer, &rectangle);
+			
+			game -> erase.x = game -> erase.y = UINT_MAX;
+		}
 
-inline void game_unlock(gamestate_t *game)
-{
-	if(SDL_SemPost(game -> lock))
-		die("Couldn't unlock semaphore");
-}
-
-unsigned int random_integer(unsigned int f, unsigned int c)
-{
-	return (unsigned int)(f + rand() / (RAND_MAX / (f - c + 1.0) + 1.0));
+		SDL_RenderPresent(game -> renderer);
+		
+		const char *error;
+		if((error = SDL_GetError()) && *error)
+			die("Error rendering");
+	}	
 }
