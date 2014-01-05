@@ -136,6 +136,8 @@ void gamestate_tick(gamestate_t *game)
 			game -> score.points += game -> score.potential;
 			game -> score.potential = (game -> snake.length + game -> snake.feed) * (game -> snake.length + game -> snake.feed + 1);
 			
+			printf("Score: %u\n", game -> score.points);
+			
 			game -> redraw_goal = true;
 			
 			int i = 0;

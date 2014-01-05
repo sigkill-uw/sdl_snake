@@ -82,7 +82,7 @@ int main(void)
 		gamestate_render(&game, redraw);
 	}
 	
-	printf("Game over. Scored %u points.\n", game.score.points);
+	printf("Game over. Scored %u points.\n", game.score.points / 10);
 	
 	gamestate_reset(&game);
 	gamestate_render(&game, true);
