@@ -134,7 +134,7 @@ void gamestate_tick(gamestate_t *game)
 			game -> map[game -> snake.head.x][game -> snake.head.y] = last;
 			
 			game -> score.points += game -> score.potential;
-			game -> score.potential = (game -> snake.length + game -> snake.feed) * (game -> snake.length + game -> snake.feed + 1);
+			game -> score.potential = (game -> snake.length + game -> snake.feed) * (game -> snake.length + game -> snake.feed + 1)
 			
 			printf("Score: %u\n", game -> score.points);
 			

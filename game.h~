@@ -33,6 +33,7 @@ typedef struct
 
 typedef struct
 {
+	bool victory		:1;
 	bool game_over		:1;
 	bool paused			:1;
 	bool redraw_goal	:1;

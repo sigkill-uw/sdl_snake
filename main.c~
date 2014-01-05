@@ -77,7 +77,7 @@ int main(void)
 		
 		gamestate_steer(&game, new_direction);
 		gamestate_tick(&game);
-		if(game.game_over)
+		if(game.game_over || game.victory)
 			break;
 		gamestate_render(&game, redraw);
 	}
